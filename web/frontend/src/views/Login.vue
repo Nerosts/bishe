@@ -1,15 +1,20 @@
 <template>
-  <div class="login-page">
-    <div class="login-box">
-      <h2>校园活动与讲座报名平台</h2>
+  <div class="page">
+    <div class="login-card">
+      <h1>校园活动与讲座报名平台</h1>
       <p class="sub-title">用户登录</p>
 
-      <input v-model="username" type="text" placeholder="请输入用户名" />
-      <input v-model="password" type="password" placeholder="请输入密码" />
+      <div class="form-item">
+        <input v-model="username" type="text" placeholder="请输入用户名" />
+      </div>
 
-      <button @click="handleLogin">登录</button>
+      <div class="form-item">
+        <input v-model="password" type="password" placeholder="请输入密码" />
+      </div>
 
-      <p class="message">{{ message }}</p>
+      <button class="login-btn" @click="handleLogin">登录</button>
+
+      <p v-if="message" class="message">{{ message }}</p>
     </div>
   </div>
 </template>
@@ -17,9 +22,11 @@
 <script setup>
 import { ref } from 'vue'
 import axios from 'axios'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
+import { API_BASE_URL } from '../config'
 
 const router = useRouter()
+const route = useRoute()
 
 const username = ref('')
 const password = ref('')
@@ -32,18 +39,21 @@ const handleLogin = async () => {
   }
 
   try {
-    const res = await axios.post('http://127.0.0.1:5000/login', {
+    const res = await axios.post(`${API_BASE_URL}/login`, {
       username: username.value,
       password: password.value
     })
 
-    const data = res.data
+    localStorage.setItem('user_id', res.data.user_id)
+    localStorage.setItem('username', res.data.username)
+    localStorage.setItem('role', res.data.role)
 
-    localStorage.setItem('user_id', data.user_id)
-    localStorage.setItem('username', data.username)
-    localStorage.setItem('role', data.role)
+    const redirectPath = route.query.redirect
 
-    message.value = '登录成功'
+    if (redirectPath) {
+      router.push(redirectPath)
+      return
+    }
 
     router.push('/home')
   } catch (error) {
@@ -57,61 +67,69 @@ const handleLogin = async () => {
 </script>
 
 <style scoped>
-.login-page {
-  width: 100%;
-  height: 100vh;
+.page {
+  min-height: 100vh;
+  background: #f5f7fa;
   display: flex;
   justify-content: center;
   align-items: center;
 }
 
-.login-box {
-  width: 360px;
-  background: #fff;
+.login-card {
+  width: 420px;
+  background: white;
+  border-radius: 16px;
   padding: 40px;
-  border-radius: 12px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.08);
   text-align: center;
 }
 
-h2 {
-  margin-bottom: 10px;
+h1 {
+  font-size: 22px;
   color: #333;
+  margin-bottom: 16px;
 }
 
 .sub-title {
   color: #666;
-  margin-bottom: 25px;
+  margin-bottom: 24px;
+}
+
+.form-item {
+  margin-bottom: 16px;
 }
 
 input {
   width: 100%;
   box-sizing: border-box;
-  padding: 12px;
-  margin-bottom: 15px;
+  padding: 14px;
   border: 1px solid #dcdfe6;
   border-radius: 8px;
   font-size: 14px;
+  outline: none;
 }
 
-button {
+input:focus {
+  border-color: #409eff;
+}
+
+.login-btn {
   width: 100%;
-  padding: 12px;
+  border: none;
   background: #409eff;
   color: white;
-  border: none;
-  border-radius: 8px;
   font-size: 15px;
+  padding: 14px;
+  border-radius: 8px;
   cursor: pointer;
 }
 
-button:hover {
+.login-btn:hover {
   background: #66b1ff;
 }
 
 .message {
-  margin-top: 15px;
-  color: #e74c3c;
-  min-height: 20px;
+  margin-top: 16px;
+  color: #f56c6c;
 }
 </style>
