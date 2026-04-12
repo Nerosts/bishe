@@ -3,12 +3,81 @@
     <div class="top-bar">
       <div>
         <h1>用户管理</h1>
-        <p class="sub-title">管理员可查看系统用户，并按用户名或角色筛选</p>
+        <p class="sub-title">管理员可查看系统用户，并按用户名或角色筛选，也可以直接创建账号</p>
       </div>
 
       <div class="top-buttons">
         <button class="purple-btn" @click="goHome">返回首页</button>
         <button class="red-btn" @click="logout">退出登录</button>
+      </div>
+    </div>
+
+    <div class="create-card">
+      <h2>创建用户</h2>
+
+      <div class="create-form">
+        <div class="form-item">
+          <label>用户名</label>
+          <input v-model="newUser.username" type="text" placeholder="请输入用户名" />
+        </div>
+
+        <div class="form-item">
+          <label>密码</label>
+          <input v-model="newUser.password" type="text" placeholder="请输入密码" />
+        </div>
+
+        <div class="form-item">
+          <label>角色</label>
+          <select v-model="newUser.role">
+            <option value="student">student</option>
+            <option value="organizer">organizer</option>
+            <option value="admin">admin</option>
+          </select>
+        </div>
+
+        <div class="form-buttons">
+          <button class="green-btn" @click="createUser">创建用户</button>
+          <button class="gray-btn" @click="resetCreateForm">清空</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="batch-card">
+      <h2>批量创建用户</h2>
+      <p class="batch-tip">
+        一行输入一个用户名，系统会用统一密码和统一角色批量创建账号。<br />
+        示例：student101 / student102 / student103
+      </p>
+
+      <div class="batch-form">
+        <div class="form-item batch-textarea-box">
+          <label>批量用户名</label>
+          <textarea
+            v-model="batchForm.usernamesText"
+            placeholder="请一行输入一个用户名，例如：&#10;student101&#10;student102&#10;student103"
+          ></textarea>
+        </div>
+
+        <div class="batch-side">
+          <div class="form-item">
+            <label>统一密码</label>
+            <input v-model="batchForm.password" type="text" placeholder="请输入统一密码" />
+          </div>
+
+          <div class="form-item">
+            <label>统一角色</label>
+            <select v-model="batchForm.role">
+              <option value="student">student</option>
+              <option value="organizer">organizer</option>
+              <option value="admin">admin</option>
+            </select>
+          </div>
+
+          <div class="form-buttons">
+            <button class="green-btn" @click="batchCreateUsers">批量创建</button>
+            <button class="gray-btn" @click="resetBatchForm">清空</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -76,7 +145,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import axios from 'axios'
 import { useRouter } from 'vue-router'
 import { API_BASE_URL } from '../config'
@@ -88,18 +157,40 @@ const role = ref('')
 const message = ref('')
 const userList = ref([])
 
+const currentUserId = localStorage.getItem('user_id')
+const currentRole = localStorage.getItem('role')
+
+const newUser = reactive({
+  username: '',
+  password: '',
+  role: 'student'
+})
+
+const batchForm = reactive({
+  usernamesText: '',
+  password: '',
+  role: 'student'
+})
+
 const loadUsers = async () => {
   try {
     const res = await axios.get(`${API_BASE_URL}/admin/users`, {
       params: {
+        user_id: currentUserId,
         username: username.value,
         role: role.value
       }
     })
     userList.value = res.data || []
-    message.value = ''
+    if (!message.value.includes('成功') && !message.value.includes('完成')) {
+      message.value = ''
+    }
   } catch (error) {
-    message.value = '获取用户列表失败'
+    if (error.response && error.response.data && error.response.data.message) {
+      message.value = error.response.data.message
+    } else {
+      message.value = '获取用户列表失败'
+    }
   }
 }
 
@@ -109,15 +200,86 @@ const resetFilters = async () => {
   await loadUsers()
 }
 
+const resetCreateForm = () => {
+  newUser.username = ''
+  newUser.password = ''
+  newUser.role = 'student'
+}
+
+const resetBatchForm = () => {
+  batchForm.usernamesText = ''
+  batchForm.password = ''
+  batchForm.role = 'student'
+}
+
+const createUser = async () => {
+  if (!newUser.username || !newUser.password || !newUser.role) {
+    message.value = '请填写完整的用户名、密码和角色'
+    return
+  }
+
+  try {
+    const res = await axios.post(`${API_BASE_URL}/admin/create_user`, {
+      user_id: currentUserId,
+      username: newUser.username,
+      password: newUser.password,
+      role: newUser.role
+    })
+
+    message.value = res.data.message || '创建用户成功'
+    resetCreateForm()
+    await loadUsers()
+  } catch (error) {
+    if (error.response && error.response.data && error.response.data.message) {
+      message.value = error.response.data.message
+    } else {
+      message.value = '创建用户失败'
+    }
+  }
+}
+
+const batchCreateUsers = async () => {
+  if (!batchForm.usernamesText.trim()) {
+    message.value = '请填写批量用户名'
+    return
+  }
+
+  if (!batchForm.password.trim()) {
+    message.value = '请填写统一密码'
+    return
+  }
+
+  try {
+    const res = await axios.post(`${API_BASE_URL}/admin/batch_create_users`, {
+      user_id: currentUserId,
+      usernames_text: batchForm.usernamesText,
+      password: batchForm.password,
+      role: batchForm.role
+    })
+
+    const data = res.data
+    message.value =
+      `批量创建完成：成功 ${data.success_count} 个，重复 ${data.duplicate_count} 个，无效 ${data.invalid_count} 个`
+
+    resetBatchForm()
+    await loadUsers()
+  } catch (error) {
+    if (error.response && error.response.data && error.response.data.message) {
+      message.value = error.response.data.message
+    } else {
+      message.value = '批量创建失败'
+    }
+  }
+}
+
 const deleteUser = async (userId, usernameText) => {
-  const currentAdminId = localStorage.getItem('user_id')
   const ok = window.confirm(`确定要删除用户 ${usernameText} 吗？`)
   if (!ok) return
 
   try {
     const res = await axios.delete(`${API_BASE_URL}/admin/users/${userId}`, {
       params: {
-        current_admin_id: currentAdminId
+        user_id: currentUserId
       }
     })
     message.value = res.data.message
@@ -143,7 +305,6 @@ const logout = () => {
 }
 
 onMounted(async () => {
-  const currentRole = localStorage.getItem('role')
   if (currentRole !== 'admin') {
     router.push('/login')
     return
@@ -173,6 +334,12 @@ h1 {
   color: #333;
 }
 
+h2 {
+  margin: 0 0 18px 0;
+  color: #333;
+  font-size: 22px;
+}
+
 .sub-title {
   margin-top: 8px;
   color: #666;
@@ -183,29 +350,61 @@ h1 {
   gap: 12px;
 }
 
-.filter-card {
+.create-card,
+.batch-card,
+.filter-card,
+.table-card {
   background: white;
   border-radius: 14px;
   padding: 20px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
   margin-bottom: 20px;
+}
+
+.create-form,
+.filter-card {
   display: flex;
   gap: 20px;
   align-items: end;
   flex-wrap: wrap;
 }
 
+.batch-form {
+  display: flex;
+  gap: 24px;
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+
+.batch-side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  justify-content: flex-start;
+}
+
+.batch-tip {
+  margin-top: 0;
+  margin-bottom: 16px;
+  color: #666;
+  line-height: 1.8;
+}
+
+.form-item,
 .filter-item {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
+.form-item label,
 .filter-item label {
   color: #333;
   font-weight: bold;
 }
 
+.form-item input,
+.form-item select,
 .filter-item input,
 .filter-item select {
   width: 240px;
@@ -216,17 +415,22 @@ h1 {
   box-sizing: border-box;
 }
 
+.batch-textarea-box textarea {
+  width: 420px;
+  min-height: 180px;
+  resize: vertical;
+  padding: 12px;
+  border: 1px solid #dcdfe6;
+  border-radius: 8px;
+  font-size: 14px;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+
+.form-buttons,
 .filter-buttons {
   display: flex;
   gap: 12px;
-}
-
-.table-card {
-  background: white;
-  border-radius: 14px;
-  padding: 20px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
-  overflow-x: auto;
 }
 
 table {
@@ -272,6 +476,13 @@ button {
 }
 .blue-btn:hover {
   background: #66b1ff;
+}
+
+.green-btn {
+  background: #67c23a;
+}
+.green-btn:hover {
+  background: #85ce61;
 }
 
 .gray-btn {

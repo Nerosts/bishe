@@ -45,6 +45,54 @@ def calc_event_status(event):
     return event.status if event.status else "报名中"
 
 
+def get_request_user_id():
+    user_id = request.args.get("user_id")
+
+    if not user_id:
+        data = request.get_json(silent=True) or {}
+        user_id = data.get("user_id")
+
+    if not user_id:
+        user_id = request.headers.get("X-User-Id")
+
+    return user_id
+
+
+def check_role(required_role):
+    user_id = get_request_user_id()
+
+    if not user_id:
+        return False, None, (jsonify({"message": "缺少 user_id"}), 403)
+
+    user = User.query.get(user_id)
+    if not user:
+        return False, None, (jsonify({"message": "用户不存在"}), 404)
+
+    if user.role != required_role:
+        return False, None, (jsonify({"message": f"权限不足，需要 {required_role} 角色"}), 403)
+
+    return True, user, None
+
+
+def check_organizer_access(route_organizer_id):
+    user_id = get_request_user_id()
+
+    if not user_id:
+        return False, None, (jsonify({"message": "缺少 user_id"}), 403)
+
+    current_user = User.query.get(user_id)
+    if not current_user:
+        return False, None, (jsonify({"message": "用户不存在"}), 404)
+
+    if current_user.role != "organizer":
+        return False, None, (jsonify({"message": "只有 organizer 可以访问该接口"}), 403)
+
+    if int(current_user.id) != int(route_organizer_id):
+        return False, None, (jsonify({"message": "你无权访问其他组织者的数据"}), 403)
+
+    return True, current_user, None
+
+
 @app.route("/")
 def hello():
     return "Flask + MySQL 已连接成功！"
@@ -120,8 +168,124 @@ def login():
     })
 
 
+@app.route("/admin/create_user", methods=["POST"])
+def admin_create_user():
+    ok, user, error_response = check_role("admin")
+    if not ok:
+        return error_response
+
+    data = request.get_json()
+
+    if not data:
+        return jsonify({"message": "请求体不能为空"}), 400
+
+    username = data.get("username", "").strip()
+    password = data.get("password", "").strip()
+    role = data.get("role", "").strip()
+
+    if not username or not password or not role:
+        return jsonify({"message": "用户名、密码、角色不能为空"}), 400
+
+    if role not in ["student", "organizer", "admin"]:
+        return jsonify({"message": "角色不合法"}), 400
+
+    existing_user = User.query.filter_by(username=username).first()
+    if existing_user:
+        return jsonify({"message": "用户名已存在"}), 400
+
+    new_user = User(
+        username=username,
+        password=password,
+        role=role
+    )
+
+    db.session.add(new_user)
+    db.session.commit()
+
+    return jsonify({
+        "message": "创建用户成功",
+        "user_id": new_user.id,
+        "username": new_user.username,
+        "role": new_user.role
+    })
+
+
+@app.route("/admin/batch_create_users", methods=["POST"])
+def admin_batch_create_users():
+    ok, user, error_response = check_role("admin")
+    if not ok:
+        return error_response
+
+    data = request.get_json()
+
+    if not data:
+        return jsonify({"message": "请求体不能为空"}), 400
+
+    usernames_text = data.get("usernames_text", "").strip()
+    password = data.get("password", "").strip()
+    role = data.get("role", "").strip()
+
+    if not usernames_text:
+        return jsonify({"message": "请输入批量用户名"}), 400
+
+    if not password:
+        return jsonify({"message": "请输入统一密码"}), 400
+
+    if role not in ["student", "organizer", "admin"]:
+        return jsonify({"message": "角色不合法"}), 400
+
+    raw_lines = usernames_text.splitlines()
+    username_list = []
+
+    for line in raw_lines:
+        item = line.strip()
+        if item:
+            username_list.append(item)
+
+    if len(username_list) == 0:
+        return jsonify({"message": "没有有效用户名"}), 400
+
+    success_users = []
+    duplicate_users = []
+    invalid_users = []
+
+    for username in username_list:
+        if " " in username:
+            invalid_users.append(username)
+            continue
+
+        existing_user = User.query.filter_by(username=username).first()
+        if existing_user:
+            duplicate_users.append(username)
+            continue
+
+        new_user = User(
+            username=username,
+            password=password,
+            role=role
+        )
+        db.session.add(new_user)
+        success_users.append(username)
+
+    db.session.commit()
+
+    return jsonify({
+        "message": "批量创建完成",
+        "success_count": len(success_users),
+        "duplicate_count": len(duplicate_users),
+        "invalid_count": len(invalid_users),
+        "success_users": success_users,
+        "duplicate_users": duplicate_users,
+        "invalid_users": invalid_users
+    })
+
+
 @app.route("/admin/users", methods=["GET"])
 def get_admin_users():
+    ok, user, error_response = check_role("admin")
+    if not ok:
+        return error_response
+
     username = request.args.get("username", "").strip()
     role = request.args.get("role", "").strip()
 
@@ -136,12 +300,12 @@ def get_admin_users():
     users = query.order_by(User.id.asc()).all()
 
     result = []
-    for user in users:
+    for user_item in users:
         result.append({
-            "id": user.id,
-            "username": user.username,
-            "role": user.role,
-            "created_at": user.created_at.strftime("%Y-%m-%d %H:%M:%S") if user.created_at else ""
+            "id": user_item.id,
+            "username": user_item.username,
+            "role": user_item.role,
+            "created_at": user_item.created_at.strftime("%Y-%m-%d %H:%M:%S") if user_item.created_at else ""
         })
 
     return jsonify(result)
@@ -149,7 +313,9 @@ def get_admin_users():
 
 @app.route("/admin/users/<int:user_id>", methods=["DELETE"])
 def delete_admin_user(user_id):
-    current_admin_id = request.args.get("current_admin_id")
+    ok, current_user, error_response = check_role("admin")
+    if not ok:
+        return error_response
 
     user = User.query.get(user_id)
     if not user:
@@ -158,7 +324,7 @@ def delete_admin_user(user_id):
     if user.role == "admin":
         return jsonify({"message": "不能删除管理员账号"}), 400
 
-    if current_admin_id and str(user.id) == str(current_admin_id):
+    if str(user.id) == str(current_user.id):
         return jsonify({"message": "不能删除当前登录账号"}), 400
 
     related_registrations = Registration.query.filter_by(user_id=user.id).all()
@@ -422,9 +588,16 @@ def reject_registration(registration_id):
 
 @app.route("/events/<int:event_id>/qrcode", methods=["GET"])
 def generate_event_qrcode(event_id):
+    ok, current_user, error_response = check_role("organizer")
+    if not ok:
+        return error_response
+
     event = Event.query.get(event_id)
     if not event:
         return jsonify({"message": "活动不存在"}), 404
+
+    if int(event.organizer_id) != int(current_user.id):
+        return jsonify({"message": "你无权查看其他组织者活动的二维码"}), 403
 
     os.makedirs("static/qrcodes", exist_ok=True)
 
@@ -530,6 +703,10 @@ def get_checkins():
 
 @app.route("/admin/checkins", methods=["GET"])
 def get_admin_checkins():
+    ok, user, error_response = check_role("admin")
+    if not ok:
+        return error_response
+
     username = request.args.get("username", "").strip()
     event_id = request.args.get("event_id", "").strip()
 
@@ -551,11 +728,11 @@ def get_admin_checkins():
     rows = query.order_by(Checkin.id.desc()).all()
 
     result = []
-    for checkin, user, event in rows:
+    for checkin, user_item, event in rows:
         result.append({
             "checkin_id": checkin.id,
-            "user_id": user.id,
-            "username": user.username,
+            "user_id": user_item.id,
+            "username": user_item.username,
             "event_id": event.id,
             "event_title": event.title,
             "checkin_time": checkin.checkin_time.strftime("%Y-%m-%d %H:%M:%S") if checkin.checkin_time else ""
@@ -577,6 +754,10 @@ def get_admin_checkins():
 
 @app.route("/admin/checkins/export", methods=["GET"])
 def export_admin_checkins():
+    ok, user, error_response = check_role("admin")
+    if not ok:
+        return error_response
+
     username = request.args.get("username", "").strip()
     event_id = request.args.get("event_id", "").strip()
 
@@ -598,11 +779,11 @@ def export_admin_checkins():
     rows = query.order_by(Checkin.id.desc()).all()
 
     data = []
-    for checkin, user, event in rows:
+    for checkin, user_item, event in rows:
         data.append({
             "签到ID": checkin.id,
-            "用户ID": user.id,
-            "用户名": user.username,
+            "用户ID": user_item.id,
+            "用户名": user_item.username,
             "活动ID": event.id,
             "活动标题": event.title,
             "签到时间": checkin.checkin_time.strftime("%Y-%m-%d %H:%M:%S") if checkin.checkin_time else ""
@@ -807,6 +988,10 @@ def chart_time_slots():
 
 @app.route("/events", methods=["POST"])
 def create_event():
+    ok, current_user, error_response = check_role("organizer")
+    if not ok:
+        return error_response
+
     data = request.get_json()
 
     if not data:
@@ -827,9 +1012,8 @@ def create_event():
     if not organizer_id:
         return jsonify({"message": "缺少组织者ID"}), 400
 
-    organizer = User.query.get(organizer_id)
-    if not organizer or organizer.role != "organizer":
-        return jsonify({"message": "组织者不存在或角色错误"}), 400
+    if int(organizer_id) != int(current_user.id):
+        return jsonify({"message": "你不能冒用其他组织者身份发布活动"}), 403
 
     try:
         start_time_obj = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
@@ -858,12 +1042,9 @@ def create_event():
 
 @app.route("/organizer/<int:organizer_id>/events", methods=["GET"])
 def get_organizer_events(organizer_id):
-    organizer = User.query.get(organizer_id)
-    if not organizer:
-        return jsonify({"message": "组织者不存在"}), 404
-
-    if organizer.role != "organizer":
-        return jsonify({"message": "当前用户不是组织者"}), 400
+    ok, current_user, error_response = check_organizer_access(organizer_id)
+    if not ok:
+        return error_response
 
     events = Event.query.filter_by(organizer_id=organizer_id).order_by(Event.id.desc()).all()
 
@@ -893,30 +1074,27 @@ def get_organizer_events(organizer_id):
 
 @app.route("/organizer/<int:organizer_id>/events/<int:event_id>/registrations", methods=["GET"])
 def get_organizer_event_registrations(organizer_id, event_id):
-    organizer = User.query.get(organizer_id)
-    if not organizer:
-        return jsonify({"message": "组织者不存在"}), 404
-
-    if organizer.role != "organizer":
-        return jsonify({"message": "当前用户不是组织者"}), 400
+    ok, current_user, error_response = check_organizer_access(organizer_id)
+    if not ok:
+        return error_response
 
     event = Event.query.get(event_id)
     if not event:
         return jsonify({"message": "活动不存在"}), 404
 
-    if event.organizer_id != organizer_id:
+    if int(event.organizer_id) != int(current_user.id):
         return jsonify({"message": "你无权查看这个活动的报名名单"}), 403
 
     registrations = Registration.query.filter_by(event_id=event_id).order_by(Registration.id.desc()).all()
 
     result = []
     for item in registrations:
-        user = User.query.get(item.user_id)
+        user_item = User.query.get(item.user_id)
 
         result.append({
             "registration_id": item.id,
             "user_id": item.user_id,
-            "username": user.username if user else "",
+            "username": user_item.username if user_item else "",
             "event_id": item.event_id,
             "status": item.status,
             "signup_time": item.signup_time.strftime("%Y-%m-%d %H:%M:%S") if item.signup_time else ""
@@ -934,18 +1112,15 @@ def get_organizer_event_registrations(organizer_id, event_id):
 
 @app.route("/organizer/<int:organizer_id>/events/<int:event_id>/checkin-stats", methods=["GET"])
 def get_organizer_event_checkin_stats(organizer_id, event_id):
-    organizer = User.query.get(organizer_id)
-    if not organizer:
-        return jsonify({"message": "组织者不存在"}), 404
-
-    if organizer.role != "organizer":
-        return jsonify({"message": "当前用户不是组织者"}), 400
+    ok, current_user, error_response = check_organizer_access(organizer_id)
+    if not ok:
+        return error_response
 
     event = Event.query.get(event_id)
     if not event:
         return jsonify({"message": "活动不存在"}), 404
 
-    if event.organizer_id != organizer_id:
+    if int(event.organizer_id) != int(current_user.id):
         return jsonify({"message": "你无权查看这个活动的签到情况"}), 403
 
     approved_regs = Registration.query.filter_by(
@@ -961,11 +1136,11 @@ def get_organizer_event_checkin_stats(organizer_id, event_id):
     unchecked_list = []
 
     for reg in approved_regs:
-        user = User.query.get(reg.user_id)
+        user_item = User.query.get(reg.user_id)
 
         user_info = {
             "user_id": reg.user_id,
-            "username": user.username if user else "",
+            "username": user_item.username if user_item else "",
             "signup_time": reg.signup_time.strftime("%Y-%m-%d %H:%M:%S") if reg.signup_time else ""
         }
 
@@ -999,18 +1174,15 @@ def get_organizer_event_checkin_stats(organizer_id, event_id):
 
 @app.route("/organizer/<int:organizer_id>/events/<int:event_id>", methods=["DELETE"])
 def delete_organizer_event(organizer_id, event_id):
-    organizer = User.query.get(organizer_id)
-    if not organizer:
-        return jsonify({"message": "组织者不存在"}), 404
-
-    if organizer.role != "organizer":
-        return jsonify({"message": "当前用户不是组织者"}), 400
+    ok, current_user, error_response = check_organizer_access(organizer_id)
+    if not ok:
+        return error_response
 
     event = Event.query.get(event_id)
     if not event:
         return jsonify({"message": "活动不存在"}), 404
 
-    if event.organizer_id != organizer_id:
+    if int(event.organizer_id) != int(current_user.id):
         return jsonify({"message": "你无权删除这个活动"}), 403
 
     related_registrations = Registration.query.filter_by(event_id=event_id).all()
@@ -1033,18 +1205,15 @@ def delete_organizer_event(organizer_id, event_id):
 
 @app.route("/organizer/<int:organizer_id>/events/<int:event_id>", methods=["PUT"])
 def update_organizer_event(organizer_id, event_id):
-    organizer = User.query.get(organizer_id)
-    if not organizer:
-        return jsonify({"message": "组织者不存在"}), 404
-
-    if organizer.role != "organizer":
-        return jsonify({"message": "当前用户不是组织者"}), 400
+    ok, current_user, error_response = check_organizer_access(organizer_id)
+    if not ok:
+        return error_response
 
     event = Event.query.get(event_id)
     if not event:
         return jsonify({"message": "活动不存在"}), 404
 
-    if event.organizer_id != organizer_id:
+    if int(event.organizer_id) != int(current_user.id):
         return jsonify({"message": "你无权编辑这个活动"}), 403
 
     data = request.get_json()
