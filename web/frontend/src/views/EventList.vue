@@ -3,11 +3,15 @@
     <div class="top-bar">
       <div>
         <h1>活动列表</h1>
-        <p class="welcome">欢迎你，{{ username }}（{{ roleText }}）</p>
+        <p class="sub-title">欢迎你，{{ username }}（{{ roleText }}）</p>
       </div>
 
       <div class="top-buttons">
-        <button class="green-btn" v-if="role === 'student'" @click="goMyRegistrations">
+        <button
+          v-if="role === 'student'"
+          class="green-btn"
+          @click="goMyRegistrations"
+        >
           我的报名
         </button>
         <button class="gray-btn" @click="goHome">返回首页</button>
@@ -15,29 +19,46 @@
       </div>
     </div>
 
-    <div class="message-box" v-if="message">
+    <div class="filter-bar">
+      <label>按分类筛选：</label>
+      <select v-model="selectedCategory">
+        <option value="">全部</option>
+        <option value="讲座">讲座</option>
+        <option value="比赛">比赛</option>
+        <option value="社团活动">社团活动</option>
+      </select>
+    </div>
+
+    <div v-if="message" class="message-box">
       {{ message }}
     </div>
 
-    <div class="grid">
-      <div class="card" v-for="event in events" :key="event.id">
-        <h3>{{ event.title }}</h3>
-        <p><strong>类别：</strong>{{ event.category }}</p>
-        <p><strong>地点：</strong>{{ event.location }}</p>
-        <p><strong>开始时间：</strong>{{ event.start_time }}</p>
-        <p><strong>人数上限：</strong>{{ event.max_participants }}</p>
-        <p><strong>已通过人数：</strong>{{ event.approved_count }}</p>
-        <p><strong>状态：</strong>{{ event.status }}</p>
-        <p class="desc">{{ event.description }}</p>
+    <div class="card-list">
+      <div class="event-card" v-for="item in filteredEvents" :key="item.id">
+        <h2>{{ item.title }}</h2>
+        <p>类别：{{ item.category }}</p>
+        <p>地点：{{ item.location }}</p>
+        <p>开始时间：{{ item.start_time }}</p>
+        <p>人数上限：{{ item.max_participants }}</p>
+        <p>已通过人数：{{ item.approved_count }}</p>
+        <p>
+          状态：
+          <span :class="item.status === '已结束' ? 'status-ended' : 'status-open'">
+            {{ item.status }}
+          </span>
+        </p>
+        <p>{{ item.description }}</p>
 
-        <div class="btn-row">
-          <button class="detail-btn" @click="goDetail(event.id)">查看详情</button>
+        <div class="btn-group">
+          <button class="detail-btn" @click="goDetail(item.id)">查看详情</button>
+
           <button
-            class="blue-btn"
             v-if="role === 'student'"
-            @click="handleRegister(event.id)"
+            class="signup-btn"
+            :disabled="item.status === '已结束'"
+            @click="signup(item.id)"
           >
-            立即报名
+            {{ item.status === '已结束' ? '活动已结束' : '立即报名' }}
           </button>
         </div>
       </div>
@@ -49,38 +70,53 @@
 import { ref, onMounted, computed } from 'vue'
 import axios from 'axios'
 import { useRouter } from 'vue-router'
+import { API_BASE_URL } from '../config'
 
 const router = useRouter()
-
-const events = ref([])
+const eventList = ref([])
 const message = ref('')
-const username = ref('')
-const role = ref('')
-const userId = ref('')
+const selectedCategory = ref('')
+
+const username = localStorage.getItem('username') || ''
+const role = localStorage.getItem('role') || ''
 
 const roleText = computed(() => {
-  if (role.value === 'student') return '学生'
-  if (role.value === 'admin') return '管理员'
-  if (role.value === 'organizer') return '组织者'
-  return '用户'
+  if (role === 'student') return '学生'
+  if (role === 'organizer') return '组织者'
+  if (role === 'admin') return '管理员'
+  return '未知角色'
+})
+
+const filteredEvents = computed(() => {
+  if (!selectedCategory.value) {
+    return eventList.value
+  }
+  return eventList.value.filter(item => item.category === selectedCategory.value)
 })
 
 const loadEvents = async () => {
   try {
-    const res = await axios.get('http://127.0.0.1:5000/events')
-    events.value = res.data
+    const res = await axios.get(`${API_BASE_URL}/events`)
+    eventList.value = res.data
   } catch (error) {
-    message.value = '活动数据加载失败，请检查后端是否启动'
+    message.value = '获取活动列表失败'
   }
 }
 
-const handleRegister = async (eventId) => {
+const signup = async (eventId) => {
+  const userId = localStorage.getItem('user_id')
+
+  if (!userId) {
+    message.value = '请先登录'
+    router.push('/login')
+    return
+  }
+
   try {
-    const res = await axios.post('http://127.0.0.1:5000/registrations', {
-      user_id: Number(userId.value),
+    const res = await axios.post(`${API_BASE_URL}/registrations`, {
+      user_id: Number(userId),
       event_id: eventId
     })
-
     message.value = res.data.message
     await loadEvents()
   } catch (error) {
@@ -92,16 +128,16 @@ const handleRegister = async (eventId) => {
   }
 }
 
-const goDetail = (id) => {
-  router.push(`/events/${id}`)
-}
-
-const goHome = () => {
-  router.push('/home')
+const goDetail = (eventId) => {
+  router.push(`/events/${eventId}`)
 }
 
 const goMyRegistrations = () => {
   router.push('/my-registrations')
+}
+
+const goHome = () => {
+  router.push('/home')
 }
 
 const logout = () => {
@@ -112,42 +148,34 @@ const logout = () => {
 }
 
 onMounted(() => {
-  userId.value = localStorage.getItem('user_id') || ''
-  username.value = localStorage.getItem('username') || ''
-  role.value = localStorage.getItem('role') || ''
-
-  if (!userId.value) {
-    router.push('/login')
-    return
-  }
-
   loadEvents()
 })
 </script>
 
 <style scoped>
 .page {
-  padding: 30px;
-  background: #f5f7fa;
   min-height: 100vh;
+  background: #f5f7fa;
+  padding: 30px;
   box-sizing: border-box;
 }
 
 .top-bar {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   margin-bottom: 24px;
 }
 
-.top-bar h1 {
+h1 {
   margin: 0;
+  font-size: 24px;
   color: #333;
 }
 
-.welcome {
-  color: #666;
+.sub-title {
   margin-top: 8px;
+  color: #666;
 }
 
 .top-buttons {
@@ -155,52 +183,98 @@ onMounted(() => {
   gap: 12px;
 }
 
+.filter-bar {
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #333;
+}
+
+.filter-bar select {
+  padding: 10px 12px;
+  border: 1px solid #dcdfe6;
+  border-radius: 8px;
+  background: white;
+}
+
+.card-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+
+.event-card {
+  width: 430px;
+  background: white;
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
+}
+
+.event-card h2 {
+  margin-top: 0;
+  color: #333;
+}
+
+.event-card p {
+  margin: 8px 0;
+  color: #555;
+}
+
+.btn-group {
+  margin-top: 18px;
+  display: flex;
+  gap: 10px;
+}
+
 button {
   border: none;
   border-radius: 8px;
-  padding: 10px 18px;
-  cursor: pointer;
+  padding: 10px 16px;
   color: white;
-}
-
-.blue-btn {
-  background: #409eff;
-}
-
-.blue-btn:hover {
-  background: #66b1ff;
-}
-
-.red-btn {
-  background: #f56c6c;
-}
-
-.red-btn:hover {
-  background: #f78989;
-}
-
-.gray-btn {
-  background: #909399;
-}
-
-.gray-btn:hover {
-  background: #a6a9ad;
-}
-
-.detail-btn {
-  background: #5b8ff9;
-}
-
-.detail-btn:hover {
-  background: #7aa7ff;
+  cursor: pointer;
+  font-size: 14px;
 }
 
 .green-btn {
   background: #67c23a;
 }
-
 .green-btn:hover {
   background: #85ce61;
+}
+
+.gray-btn {
+  background: #909399;
+}
+.gray-btn:hover {
+  background: #a6a9ad;
+}
+
+.red-btn {
+  background: #f56c6c;
+}
+.red-btn:hover {
+  background: #f78989;
+}
+
+.detail-btn {
+  background: #5b8def;
+}
+.detail-btn:hover {
+  background: #7aa5f3;
+}
+
+.signup-btn {
+  background: #409eff;
+}
+.signup-btn:hover {
+  background: #66b1ff;
+}
+
+.signup-btn:disabled {
+  background: #c0c4cc;
+  cursor: not-allowed;
 }
 
 .message-box {
@@ -211,41 +285,13 @@ button {
   margin-bottom: 20px;
 }
 
-.grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 20px;
+.status-open {
+  color: #16a34a;
+  font-weight: bold;
 }
 
-.card {
-  background: white;
-  border-radius: 12px;
-  padding: 20px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.06);
-}
-
-.card h3 {
-  margin-top: 0;
-  color: #333;
-}
-
-.card p {
-  margin: 8px 0;
-  color: #555;
-  font-size: 14px;
-}
-
-.desc {
-  min-height: 40px;
-}
-
-.btn-row {
-  display: flex;
-  gap: 10px;
-  margin-top: 12px;
-}
-
-.btn-row button {
-  flex: 1;
+.status-ended {
+  color: #ef4444;
+  font-weight: bold;
 }
 </style>

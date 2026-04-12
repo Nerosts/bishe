@@ -7,6 +7,7 @@
       </div>
 
       <div class="top-buttons">
+        <button class="green-btn" @click="goCheckins">签到查询</button>
         <button class="gray-btn" @click="goHome">返回首页</button>
         <button class="red-btn" @click="logout">退出登录</button>
       </div>
@@ -57,6 +58,10 @@ let timeSlotChartInstance = null
 
 const goHome = () => {
   router.push('/home')
+}
+
+const goCheckins = () => {
+  router.push('/admin/checkins')
 }
 
 const logout = () => {
@@ -236,6 +241,13 @@ button {
   padding: 10px 18px;
   color: white;
   cursor: pointer;
+}
+
+.green-btn {
+  background: #67c23a;
+}
+.green-btn:hover {
+  background: #85ce61;
 }
 
 .gray-btn {

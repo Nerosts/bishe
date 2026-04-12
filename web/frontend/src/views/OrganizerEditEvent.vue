@@ -3,56 +3,56 @@
     <div class="top-bar">
       <div>
         <h1>编辑活动</h1>
-        <p class="sub">组织者可以修改自己发布的活动信息</p>
+        <p class="sub-title">组织者可修改自己发布的活动</p>
       </div>
 
       <div class="top-buttons">
-        <button class="gray-btn" @click="goMyEvents">返回我的活动</button>
+        <button class="gray-btn" @click="goBack">返回我的活动</button>
         <button class="red-btn" @click="logout">退出登录</button>
       </div>
     </div>
 
-    <div class="form-card">
-      <div class="message-box" v-if="message">
+    <div class="form-card" v-if="formLoaded">
+      <div v-if="message" class="message-box">
         {{ message }}
       </div>
 
       <div class="form-item">
         <label>活动标题</label>
-        <input v-model="form.title" type="text" placeholder="请输入活动标题" />
+        <input v-model="form.title" type="text" />
       </div>
 
       <div class="form-item">
         <label>活动类别</label>
-        <input v-model="form.category" type="text" placeholder="如：讲座 / 比赛 / 社团活动" />
+        <select v-model="form.category">
+          <option value="">请选择活动类别</option>
+          <option value="讲座">讲座</option>
+          <option value="比赛">比赛</option>
+          <option value="社团活动">社团活动</option>
+        </select>
       </div>
 
       <div class="form-item">
         <label>活动地点</label>
-        <input v-model="form.location" type="text" placeholder="请输入活动地点" />
+        <input v-model="form.location" type="text" />
       </div>
 
       <div class="form-item">
         <label>开始时间</label>
-        <input v-model="form.start_time" type="text" placeholder="格式：2026-04-20 14:00:00" />
+        <input v-model="form.start_time" type="text" />
       </div>
 
       <div class="form-item">
         <label>人数上限</label>
-        <input v-model="form.max_participants" type="number" placeholder="请输入人数上限" />
-      </div>
-
-      <div class="form-item">
-        <label>活动状态</label>
-        <input v-model="form.status" type="text" placeholder="如：报名中 / 已结束" />
+        <input v-model="form.max_participants" type="number" />
       </div>
 
       <div class="form-item">
         <label>活动描述</label>
-        <textarea v-model="form.description" placeholder="请输入活动描述"></textarea>
+        <textarea v-model="form.description" rows="5"></textarea>
       </div>
 
-      <button class="blue-btn submit-btn" @click="submitEdit">保存修改</button>
+      <button class="submit-btn" @click="submitForm">保存修改</button>
     </div>
   </div>
 </template>
@@ -61,10 +61,13 @@
 import { reactive, ref, onMounted } from 'vue'
 import axios from 'axios'
 import { useRouter, useRoute } from 'vue-router'
+import { API_BASE_URL } from '../config'
 
 const router = useRouter()
 const route = useRoute()
+
 const message = ref('')
+const formLoaded = ref(false)
 
 const form = reactive({
   title: '',
@@ -72,68 +75,49 @@ const form = reactive({
   location: '',
   start_time: '',
   max_participants: '',
-  description: '',
-  status: ''
+  description: ''
 })
 
 const loadEvent = async () => {
-  const eventId = route.params.id
-
   try {
-    const res = await axios.get(`http://127.0.0.1:5000/events/${eventId}`)
+    const res = await axios.get(`${API_BASE_URL}/events/${route.params.id}`)
     form.title = res.data.title || ''
     form.category = res.data.category || ''
     form.location = res.data.location || ''
     form.start_time = res.data.start_time || ''
     form.max_participants = res.data.max_participants || ''
     form.description = res.data.description || ''
-    form.status = res.data.status || ''
+    formLoaded.value = true
   } catch (error) {
-    message.value = '加载活动信息失败'
+    message.value = '获取活动信息失败'
   }
 }
 
-const submitEdit = async () => {
+const submitForm = async () => {
   const organizerId = localStorage.getItem('user_id')
-  const eventId = route.params.id
+  const role = localStorage.getItem('role')
 
-  if (
-    !form.title ||
-    !form.category ||
-    !form.location ||
-    !form.start_time ||
-    !form.max_participants
-  ) {
-    message.value = '请填写完整信息'
+  if (!organizerId || role !== 'organizer') {
+    router.push('/login')
     return
   }
 
   try {
-    const res = await axios.put(`http://127.0.0.1:5000/organizer/${organizerId}/events/${eventId}`, {
-      title: form.title,
-      category: form.category,
-      location: form.location,
-      start_time: form.start_time,
-      max_participants: form.max_participants,
-      description: form.description,
-      status: form.status
-    })
-
+    const res = await axios.put(
+      `${API_BASE_URL}/organizer/${organizerId}/events/${route.params.id}`,
+      { ...form }
+    )
     message.value = res.data.message
-
-    setTimeout(() => {
-      router.push('/organizer/my-events')
-    }, 800)
   } catch (error) {
     if (error.response && error.response.data && error.response.data.message) {
       message.value = error.response.data.message
     } else {
-      message.value = '活动修改失败'
+      message.value = '修改活动失败'
     }
   }
 }
 
-const goMyEvents = () => {
+const goBack = () => {
   router.push('/organizer/my-events')
 }
 
@@ -145,37 +129,31 @@ const logout = () => {
 }
 
 onMounted(() => {
-  const role = localStorage.getItem('role')
-  if (role !== 'organizer') {
-    router.push('/login')
-    return
-  }
-
   loadEvent()
 })
 </script>
 
 <style scoped>
 .page {
-  padding: 30px;
-  background: #f5f7fa;
   min-height: 100vh;
+  background: #f5f7fa;
+  padding: 30px;
   box-sizing: border-box;
 }
 
 .top-bar {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   margin-bottom: 24px;
 }
 
-.top-bar h1 {
+h1 {
   margin: 0;
   color: #333;
 }
 
-.sub {
+.sub-title {
   margin-top: 8px;
   color: #666;
 }
@@ -185,44 +163,12 @@ onMounted(() => {
   gap: 12px;
 }
 
-button {
-  border: none;
-  border-radius: 8px;
-  padding: 10px 18px;
-  cursor: pointer;
-  color: white;
-}
-
-.gray-btn {
-  background: #909399;
-}
-
-.gray-btn:hover {
-  background: #a6a9ad;
-}
-
-.red-btn {
-  background: #f56c6c;
-}
-
-.red-btn:hover {
-  background: #f78989;
-}
-
-.blue-btn {
-  background: #409eff;
-}
-
-.blue-btn:hover {
-  background: #66b1ff;
-}
-
 .form-card {
-  max-width: 720px;
+  max-width: 760px;
   background: white;
-  border-radius: 12px;
-  padding: 28px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+  border-radius: 16px;
+  padding: 26px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
 }
 
 .form-item {
@@ -237,23 +183,55 @@ button {
 }
 
 .form-item input,
-.form-item textarea {
+.form-item textarea,
+.form-item select {
   width: 100%;
-  box-sizing: border-box;
   padding: 12px;
   border: 1px solid #dcdfe6;
   border-radius: 8px;
   font-size: 14px;
-}
-
-.form-item textarea {
-  min-height: 120px;
-  resize: vertical;
+  box-sizing: border-box;
 }
 
 .submit-btn {
   width: 100%;
-  margin-top: 10px;
+  border: none;
+  border-radius: 8px;
+  padding: 12px;
+  background: #409eff;
+  color: white;
+  cursor: pointer;
+  font-size: 15px;
+}
+
+.submit-btn:hover {
+  background: #66b1ff;
+}
+
+.gray-btn {
+  background: #909399;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 16px;
+  color: white;
+  cursor: pointer;
+}
+
+.gray-btn:hover {
+  background: #a6a9ad;
+}
+
+.red-btn {
+  background: #f56c6c;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 16px;
+  color: white;
+  cursor: pointer;
+}
+
+.red-btn:hover {
+  background: #f78989;
 }
 
 .message-box {
@@ -261,6 +239,6 @@ button {
   color: #856404;
   padding: 12px 16px;
   border-radius: 8px;
-  margin-bottom: 18px;
+  margin-bottom: 20px;
 }
 </style>

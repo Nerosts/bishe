@@ -26,7 +26,12 @@
         <p>开始时间：{{ item.start_time }}</p>
         <p>人数上限：{{ item.max_participants }}</p>
         <p>已通过人数：{{ item.approved_count }}</p>
-        <p>状态：{{ item.status }}</p>
+        <p>
+          状态：
+          <span :class="item.status === '已结束' ? 'status-ended' : 'status-open'">
+            {{ item.status }}
+          </span>
+        </p>
         <p>描述：{{ item.description }}</p>
         <p>发布时间：{{ item.created_at }}</p>
 
@@ -250,5 +255,15 @@ button {
   padding: 12px 16px;
   border-radius: 8px;
   margin-bottom: 20px;
+}
+
+.status-open {
+  color: #16a34a;
+  font-weight: bold;
+}
+
+.status-ended {
+  color: #ef4444;
+  font-weight: bold;
 }
 </style>

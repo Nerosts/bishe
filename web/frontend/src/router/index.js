@@ -6,6 +6,8 @@ import MyRegistrations from '../views/MyRegistrations.vue'
 import EventDetail from '../views/EventDetail.vue'
 import AdminReview from '../views/AdminReview.vue'
 import AdminStats from '../views/AdminStats.vue'
+import AdminCheckins from '../views/AdminCheckins.vue'
+import AdminUsers from '../views/AdminUsers.vue'
 import OrganizerPublish from '../views/OrganizerPublish.vue'
 import OrganizerMyEvents from '../views/OrganizerMyEvents.vue'
 import OrganizerEventRegistrations from '../views/OrganizerEventRegistrations.vue'
@@ -53,6 +55,16 @@ const routes = [
     path: '/admin/stats',
     name: 'admin-stats',
     component: AdminStats
+  },
+  {
+    path: '/admin/checkins',
+    name: 'admin-checkins',
+    component: AdminCheckins
+  },
+  {
+    path: '/admin/users',
+    name: 'admin-users',
+    component: AdminUsers
   },
   {
     path: '/organizer/publish',

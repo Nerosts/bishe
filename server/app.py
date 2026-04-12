@@ -19,13 +19,9 @@ CORS(app)
 db.init_app(app)
 
 
-# =====================
-# 自动获取当前电脑局域网 IP
-# =====================
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        # 不需要真的连通，只是借系统路由拿本机出口IP
         s.connect(("8.8.8.8", 80))
         ip = s.getsockname()[0]
     except Exception:
@@ -43,18 +39,17 @@ def get_backend_base_url():
     return f"http://{get_local_ip()}:5000"
 
 
-# =====================
-# 首页测试
-# =====================
+def calc_event_status(event):
+    if event.start_time and event.start_time < datetime.now():
+        return "已结束"
+    return event.status if event.status else "报名中"
+
+
 @app.route("/")
 def hello():
     return "Flask + MySQL 已连接成功！"
 
 
-# =====================
-# 查看当前自动识别的访问地址
-# 方便你调试手机扫码
-# =====================
 @app.route("/network-info", methods=["GET"])
 def network_info():
     return jsonify({
@@ -64,9 +59,6 @@ def network_info():
     })
 
 
-# =====================
-# 用户注册
-# =====================
 @app.route("/register", methods=["POST"])
 def register():
     data = request.get_json()
@@ -102,9 +94,6 @@ def register():
     })
 
 
-# =====================
-# 用户登录
-# =====================
 @app.route("/login", methods=["POST"])
 def login():
     data = request.get_json()
@@ -131,9 +120,78 @@ def login():
     })
 
 
-# =====================
-# 获取所有活动
-# =====================
+@app.route("/admin/users", methods=["GET"])
+def get_admin_users():
+    username = request.args.get("username", "").strip()
+    role = request.args.get("role", "").strip()
+
+    query = User.query
+
+    if username:
+        query = query.filter(User.username.like(f"%{username}%"))
+
+    if role:
+        query = query.filter(User.role == role)
+
+    users = query.order_by(User.id.asc()).all()
+
+    result = []
+    for user in users:
+        result.append({
+            "id": user.id,
+            "username": user.username,
+            "role": user.role,
+            "created_at": user.created_at.strftime("%Y-%m-%d %H:%M:%S") if user.created_at else ""
+        })
+
+    return jsonify(result)
+
+
+@app.route("/admin/users/<int:user_id>", methods=["DELETE"])
+def delete_admin_user(user_id):
+    current_admin_id = request.args.get("current_admin_id")
+
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"message": "用户不存在"}), 404
+
+    if user.role == "admin":
+        return jsonify({"message": "不能删除管理员账号"}), 400
+
+    if current_admin_id and str(user.id) == str(current_admin_id):
+        return jsonify({"message": "不能删除当前登录账号"}), 400
+
+    related_registrations = Registration.query.filter_by(user_id=user.id).all()
+    for item in related_registrations:
+        db.session.delete(item)
+
+    related_checkins = Checkin.query.filter_by(user_id=user.id).all()
+    for item in related_checkins:
+        db.session.delete(item)
+
+    if user.role == "organizer":
+        organizer_events = Event.query.filter_by(organizer_id=user.id).all()
+        for event in organizer_events:
+            event_regs = Registration.query.filter_by(event_id=event.id).all()
+            for item in event_regs:
+                db.session.delete(item)
+
+            event_checks = Checkin.query.filter_by(event_id=event.id).all()
+            for item in event_checks:
+                db.session.delete(item)
+
+            qrcode_file = os.path.join("static", "qrcodes", f"event_{event.id}_qrcode.png")
+            if os.path.exists(qrcode_file):
+                os.remove(qrcode_file)
+
+            db.session.delete(event)
+
+    db.session.delete(user)
+    db.session.commit()
+
+    return jsonify({"message": "用户删除成功"})
+
+
 @app.route("/events", methods=["GET"])
 def get_events():
     events = Event.query.all()
@@ -154,7 +212,7 @@ def get_events():
             "start_time": event.start_time.strftime("%Y-%m-%d %H:%M:%S") if event.start_time else "",
             "max_participants": event.max_participants,
             "approved_count": approved_count,
-            "status": event.status,
+            "status": calc_event_status(event),
             "created_at": event.created_at.strftime("%Y-%m-%d %H:%M:%S") if event.created_at else "",
             "organizer_id": event.organizer_id
         })
@@ -162,9 +220,6 @@ def get_events():
     return jsonify(result)
 
 
-# =====================
-# 获取单个活动
-# =====================
 @app.route("/events/<int:event_id>", methods=["GET"])
 def get_event(event_id):
     event = Event.query.get(event_id)
@@ -186,7 +241,7 @@ def get_event(event_id):
         "start_time": event.start_time.strftime("%Y-%m-%d %H:%M:%S") if event.start_time else "",
         "max_participants": event.max_participants,
         "approved_count": approved_count,
-        "status": event.status,
+        "status": calc_event_status(event),
         "created_at": event.created_at.strftime("%Y-%m-%d %H:%M:%S") if event.created_at else "",
         "organizer_id": event.organizer_id
     }
@@ -194,9 +249,6 @@ def get_event(event_id):
     return jsonify(result)
 
 
-# =====================
-# 报名活动
-# =====================
 @app.route("/registrations", methods=["POST"])
 def create_registration():
     data = request.get_json()
@@ -217,6 +269,10 @@ def create_registration():
     event = Event.query.get(event_id)
     if not event:
         return jsonify({"message": "活动不存在"}), 404
+
+    real_status = calc_event_status(event)
+    if real_status == "已结束":
+        return jsonify({"message": "活动已结束，无法报名"}), 400
 
     existing_registration = Registration.query.filter_by(
         user_id=user_id,
@@ -249,9 +305,6 @@ def create_registration():
     })
 
 
-# =====================
-# 获取所有报名记录
-# =====================
 @app.route("/registrations", methods=["GET"])
 def get_registrations():
     registrations = Registration.query.all()
@@ -269,9 +322,6 @@ def get_registrations():
     return jsonify(result)
 
 
-# =====================
-# 获取某个用户的报名记录
-# =====================
 @app.route("/users/<int:user_id>/registrations", methods=["GET"])
 def get_user_registrations(user_id):
     user = User.query.get(user_id)
@@ -299,9 +349,6 @@ def get_user_registrations(user_id):
     return jsonify(result)
 
 
-# =====================
-# 学生取消报名
-# =====================
 @app.route("/registrations/<int:registration_id>", methods=["DELETE"])
 def cancel_registration(registration_id):
     data = request.get_json(silent=True) or {}
@@ -331,9 +378,6 @@ def cancel_registration(registration_id):
     return jsonify({"message": "取消报名成功"})
 
 
-# =====================
-# 审核通过
-# =====================
 @app.route("/registrations/<int:registration_id>/approve", methods=["PUT"])
 def approve_registration(registration_id):
     registration = Registration.query.get(registration_id)
@@ -344,6 +388,10 @@ def approve_registration(registration_id):
     event = Event.query.get(registration.event_id)
     if not event:
         return jsonify({"message": "活动不存在"}), 404
+
+    real_status = calc_event_status(event)
+    if real_status == "已结束":
+        return jsonify({"message": "活动已结束，不能再审核通过"}), 400
 
     approved_count = Registration.query.filter_by(
         event_id=registration.event_id,
@@ -359,9 +407,6 @@ def approve_registration(registration_id):
     return jsonify({"message": "审核通过"})
 
 
-# =====================
-# 审核拒绝
-# =====================
 @app.route("/registrations/<int:registration_id>/reject", methods=["PUT"])
 def reject_registration(registration_id):
     registration = Registration.query.get(registration_id)
@@ -375,10 +420,6 @@ def reject_registration(registration_id):
     return jsonify({"message": "已拒绝"})
 
 
-# =====================
-# 生成活动签到二维码
-# 自动使用当前局域网IP
-# =====================
 @app.route("/events/<int:event_id>/qrcode", methods=["GET"])
 def generate_event_qrcode(event_id):
     event = Event.query.get(event_id)
@@ -404,26 +445,17 @@ def generate_event_qrcode(event_id):
     })
 
 
-# =====================
-# 访问二维码图片
-# =====================
 @app.route("/static/qrcodes/<path:filename>")
 def serve_qrcode(filename):
     return send_from_directory("static/qrcodes", filename)
 
 
-# =====================
-# 兼容旧地址
-# =====================
 @app.route("/checkin_page", methods=["GET"])
 def checkin_page():
     event_id = request.args.get("event_id")
     return f"签到页面兼容地址：event_id={event_id}，请使用前端 /checkin 页面"
 
 
-# =====================
-# 学生签到
-# =====================
 @app.route("/checkin", methods=["POST"])
 def do_checkin():
     data = request.get_json()
@@ -480,9 +512,6 @@ def do_checkin():
     })
 
 
-# =====================
-# 查询所有签到记录
-# =====================
 @app.route("/checkins", methods=["GET"])
 def get_checkins():
     checkins = Checkin.query.all()
@@ -499,9 +528,100 @@ def get_checkins():
     return jsonify(result)
 
 
-# =====================
-# 单个活动统计
-# =====================
+@app.route("/admin/checkins", methods=["GET"])
+def get_admin_checkins():
+    username = request.args.get("username", "").strip()
+    event_id = request.args.get("event_id", "").strip()
+
+    query = db.session.query(Checkin, User, Event).join(
+        User, Checkin.user_id == User.id
+    ).join(
+        Event, Checkin.event_id == Event.id
+    )
+
+    if username:
+        query = query.filter(User.username.like(f"%{username}%"))
+
+    if event_id:
+        try:
+            query = query.filter(Checkin.event_id == int(event_id))
+        except ValueError:
+            return jsonify({"message": "活动ID格式错误"}), 400
+
+    rows = query.order_by(Checkin.id.desc()).all()
+
+    result = []
+    for checkin, user, event in rows:
+        result.append({
+            "checkin_id": checkin.id,
+            "user_id": user.id,
+            "username": user.username,
+            "event_id": event.id,
+            "event_title": event.title,
+            "checkin_time": checkin.checkin_time.strftime("%Y-%m-%d %H:%M:%S") if checkin.checkin_time else ""
+        })
+
+    all_events = Event.query.order_by(Event.id.asc()).all()
+    event_options = []
+    for e in all_events:
+        event_options.append({
+            "id": e.id,
+            "title": e.title
+        })
+
+    return jsonify({
+        "checkins": result,
+        "events": event_options
+    })
+
+
+@app.route("/admin/checkins/export", methods=["GET"])
+def export_admin_checkins():
+    username = request.args.get("username", "").strip()
+    event_id = request.args.get("event_id", "").strip()
+
+    query = db.session.query(Checkin, User, Event).join(
+        User, Checkin.user_id == User.id
+    ).join(
+        Event, Checkin.event_id == Event.id
+    )
+
+    if username:
+        query = query.filter(User.username.like(f"%{username}%"))
+
+    if event_id:
+        try:
+            query = query.filter(Checkin.event_id == int(event_id))
+        except ValueError:
+            return jsonify({"message": "活动ID格式错误"}), 400
+
+    rows = query.order_by(Checkin.id.desc()).all()
+
+    data = []
+    for checkin, user, event in rows:
+        data.append({
+            "签到ID": checkin.id,
+            "用户ID": user.id,
+            "用户名": user.username,
+            "活动ID": event.id,
+            "活动标题": event.title,
+            "签到时间": checkin.checkin_time.strftime("%Y-%m-%d %H:%M:%S") if checkin.checkin_time else ""
+        })
+
+    df = pd.DataFrame(data)
+
+    output = io.BytesIO()
+    df.to_excel(output, index=False)
+    output.seek(0)
+
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name="admin_checkins.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+
 @app.route("/events/<int:event_id>/stats", methods=["GET"])
 def get_event_stats(event_id):
     event = Event.query.get(event_id)
@@ -531,9 +651,6 @@ def get_event_stats(event_id):
     })
 
 
-# =====================
-# 活动热度排行
-# =====================
 @app.route("/events/hot", methods=["GET"])
 def get_hot_events():
     events = Event.query.all()
@@ -557,9 +674,6 @@ def get_hot_events():
     return jsonify(result)
 
 
-# =====================
-# 导出活动报名名单 Excel
-# =====================
 @app.route("/events/<int:event_id>/export", methods=["GET"])
 def export_event_registrations(event_id):
     event = Event.query.get(event_id)
@@ -591,9 +705,6 @@ def export_event_registrations(event_id):
     )
 
 
-# =====================
-# 图表数据：报名人数
-# =====================
 @app.route("/charts/registrations", methods=["GET"])
 def chart_registrations():
     events = Event.query.all()
@@ -612,9 +723,6 @@ def chart_registrations():
     })
 
 
-# =====================
-# 图表数据：签到率
-# =====================
 @app.route("/charts/attendance", methods=["GET"])
 def chart_attendance():
     events = Event.query.all()
@@ -646,9 +754,6 @@ def chart_attendance():
     })
 
 
-# =====================
-# 图表数据：热度
-# =====================
 @app.route("/charts/hot", methods=["GET"])
 def chart_hot():
     events = Event.query.all()
@@ -679,9 +784,6 @@ def chart_hot():
     })
 
 
-# =====================
-# 图表数据：时段分析
-# =====================
 @app.route("/charts/time-slots", methods=["GET"])
 def chart_time_slots():
     events = Event.query.all()
@@ -703,9 +805,6 @@ def chart_time_slots():
     })
 
 
-# =====================
-# 组织者发布活动
-# =====================
 @app.route("/events", methods=["POST"])
 def create_event():
     data = request.get_json()
@@ -757,9 +856,6 @@ def create_event():
     })
 
 
-# =====================
-# 组织者查看自己发布的活动
-# =====================
 @app.route("/organizer/<int:organizer_id>/events", methods=["GET"])
 def get_organizer_events(organizer_id):
     organizer = User.query.get(organizer_id)
@@ -787,7 +883,7 @@ def get_organizer_events(organizer_id):
             "start_time": event.start_time.strftime("%Y-%m-%d %H:%M:%S") if event.start_time else "",
             "max_participants": event.max_participants,
             "approved_count": approved_count,
-            "status": event.status,
+            "status": calc_event_status(event),
             "created_at": event.created_at.strftime("%Y-%m-%d %H:%M:%S") if event.created_at else "",
             "organizer_id": event.organizer_id
         })
@@ -795,9 +891,6 @@ def get_organizer_events(organizer_id):
     return jsonify(result)
 
 
-# =====================
-# 组织者查看某个自己发布活动的报名名单
-# =====================
 @app.route("/organizer/<int:organizer_id>/events/<int:event_id>/registrations", methods=["GET"])
 def get_organizer_event_registrations(organizer_id, event_id):
     organizer = User.query.get(organizer_id)
@@ -839,106 +932,6 @@ def get_organizer_event_registrations(organizer_id, event_id):
     })
 
 
-# =====================
-# 组织者删除自己发布的活动
-# =====================
-@app.route("/organizer/<int:organizer_id>/events/<int:event_id>", methods=["DELETE"])
-def delete_organizer_event(organizer_id, event_id):
-    organizer = User.query.get(organizer_id)
-    if not organizer:
-        return jsonify({"message": "组织者不存在"}), 404
-
-    if organizer.role != "organizer":
-        return jsonify({"message": "当前用户不是组织者"}), 400
-
-    event = Event.query.get(event_id)
-    if not event:
-        return jsonify({"message": "活动不存在"}), 404
-
-    if event.organizer_id != organizer_id:
-        return jsonify({"message": "你无权删除这个活动"}), 403
-
-    related_registrations = Registration.query.filter_by(event_id=event_id).all()
-    for item in related_registrations:
-        db.session.delete(item)
-
-    related_checkins = Checkin.query.filter_by(event_id=event_id).all()
-    for item in related_checkins:
-        db.session.delete(item)
-
-    qrcode_file = os.path.join("static", "qrcodes", f"event_{event_id}_qrcode.png")
-    if os.path.exists(qrcode_file):
-        os.remove(qrcode_file)
-
-    db.session.delete(event)
-    db.session.commit()
-
-    return jsonify({"message": "活动删除成功"})
-
-
-# =====================
-# 组织者编辑自己发布的活动
-# =====================
-@app.route("/organizer/<int:organizer_id>/events/<int:event_id>", methods=["PUT"])
-def update_organizer_event(organizer_id, event_id):
-    organizer = User.query.get(organizer_id)
-    if not organizer:
-        return jsonify({"message": "组织者不存在"}), 404
-
-    if organizer.role != "organizer":
-        return jsonify({"message": "当前用户不是组织者"}), 400
-
-    event = Event.query.get(event_id)
-    if not event:
-        return jsonify({"message": "活动不存在"}), 404
-
-    if event.organizer_id != organizer_id:
-        return jsonify({"message": "你无权编辑这个活动"}), 403
-
-    data = request.get_json()
-    if not data:
-        return jsonify({"message": "请求体不能为空"}), 400
-
-    title = data.get("title")
-    category = data.get("category")
-    location = data.get("location")
-    start_time = data.get("start_time")
-    max_participants = data.get("max_participants")
-    description = data.get("description", "")
-    status = data.get("status", "报名中")
-
-    if not title or not category or not location or not start_time or not max_participants:
-        return jsonify({"message": "缺少必要字段"}), 400
-
-    try:
-        start_time_obj = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        return jsonify({"message": "时间格式错误，应为 YYYY-MM-DD HH:MM:SS"}), 400
-
-    approved_count = Registration.query.filter_by(
-        event_id=event.id,
-        status="已通过"
-    ).count()
-
-    if int(max_participants) < approved_count:
-        return jsonify({"message": "人数上限不能小于当前已通过人数"}), 400
-
-    event.title = title
-    event.category = category
-    event.location = location
-    event.start_time = start_time_obj
-    event.max_participants = int(max_participants)
-    event.description = description
-    event.status = status
-
-    db.session.commit()
-
-    return jsonify({"message": "活动修改成功"})
-
-
-# =====================
-# 组织者查看某个自己发布活动的签到情况
-# =====================
 @app.route("/organizer/<int:organizer_id>/events/<int:event_id>/checkin-stats", methods=["GET"])
 def get_organizer_event_checkin_stats(organizer_id, event_id):
     organizer = User.query.get(organizer_id)
@@ -1003,8 +996,97 @@ def get_organizer_event_checkin_stats(organizer_id, event_id):
         "unchecked_list": unchecked_list
     })
 
-# =====================
-# 启动
-# =====================
+
+@app.route("/organizer/<int:organizer_id>/events/<int:event_id>", methods=["DELETE"])
+def delete_organizer_event(organizer_id, event_id):
+    organizer = User.query.get(organizer_id)
+    if not organizer:
+        return jsonify({"message": "组织者不存在"}), 404
+
+    if organizer.role != "organizer":
+        return jsonify({"message": "当前用户不是组织者"}), 400
+
+    event = Event.query.get(event_id)
+    if not event:
+        return jsonify({"message": "活动不存在"}), 404
+
+    if event.organizer_id != organizer_id:
+        return jsonify({"message": "你无权删除这个活动"}), 403
+
+    related_registrations = Registration.query.filter_by(event_id=event_id).all()
+    for item in related_registrations:
+        db.session.delete(item)
+
+    related_checkins = Checkin.query.filter_by(event_id=event_id).all()
+    for item in related_checkins:
+        db.session.delete(item)
+
+    qrcode_file = os.path.join("static", "qrcodes", f"event_{event_id}_qrcode.png")
+    if os.path.exists(qrcode_file):
+        os.remove(qrcode_file)
+
+    db.session.delete(event)
+    db.session.commit()
+
+    return jsonify({"message": "活动删除成功"})
+
+
+@app.route("/organizer/<int:organizer_id>/events/<int:event_id>", methods=["PUT"])
+def update_organizer_event(organizer_id, event_id):
+    organizer = User.query.get(organizer_id)
+    if not organizer:
+        return jsonify({"message": "组织者不存在"}), 404
+
+    if organizer.role != "organizer":
+        return jsonify({"message": "当前用户不是组织者"}), 400
+
+    event = Event.query.get(event_id)
+    if not event:
+        return jsonify({"message": "活动不存在"}), 404
+
+    if event.organizer_id != organizer_id:
+        return jsonify({"message": "你无权编辑这个活动"}), 403
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"message": "请求体不能为空"}), 400
+
+    title = data.get("title")
+    category = data.get("category")
+    location = data.get("location")
+    start_time = data.get("start_time")
+    max_participants = data.get("max_participants")
+    description = data.get("description", "")
+    status = data.get("status", "报名中")
+
+    if not title or not category or not location or not start_time or not max_participants:
+        return jsonify({"message": "缺少必要字段"}), 400
+
+    try:
+        start_time_obj = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return jsonify({"message": "时间格式错误，应为 YYYY-MM-DD HH:MM:SS"}), 400
+
+    approved_count = Registration.query.filter_by(
+        event_id=event.id,
+        status="已通过"
+    ).count()
+
+    if int(max_participants) < approved_count:
+        return jsonify({"message": "人数上限不能小于当前已通过人数"}), 400
+
+    event.title = title
+    event.category = category
+    event.location = location
+    event.start_time = start_time_obj
+    event.max_participants = int(max_participants)
+    event.description = description
+    event.status = status
+
+    db.session.commit()
+
+    return jsonify({"message": "活动修改成功"})
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
