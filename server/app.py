@@ -1018,31 +1018,59 @@ def get_hot_events():
 
 @app.route("/events/<int:event_id>/export", methods=["GET"])
 def export_event_registrations(event_id):
+    user_id = request.args.get("user_id", type=int)
+    if not user_id:
+        return jsonify({"message": "缺少 user_id"}), 400
+
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"message": "用户不存在"}), 404
+
     event = Event.query.get(event_id)
     if not event:
         return jsonify({"message": "活动不存在"}), 404
 
+    # 如果你现在想先保持宽松，可以不做权限限制
+    # 如果你想更严谨一点，可以保留下面这段权限判断：
+    #
+    # 1. 管理员可以导出任意活动
+    # 2. 组织者只能导出自己发布的活动
+    #
+    if user.role == "organizer":
+        if event.organizer_id != user_id:
+            return jsonify({"message": "无权导出该活动报名名单"}), 403
+    elif user.role != "admin":
+        return jsonify({"message": "仅管理员或该活动组织者可导出"}), 403
+
     registrations = Registration.query.filter_by(event_id=event_id).all()
 
-    data = []
-    for r in registrations:
-        data.append({
-            "用户ID": r.user_id,
-            "活动ID": r.event_id,
-            "状态": r.status,
-            "报名时间": r.signup_time.strftime("%Y-%m-%d %H:%M:%S") if r.signup_time else ""
+    rows = []
+    for reg in registrations:
+        reg_user = User.query.get(reg.user_id)
+
+        rows.append({
+            "报名记录ID": reg.id,
+            "用户ID": reg.user_id,
+            "用户名": reg_user.username if reg_user else "",
+            "活动ID": event.id,
+            "活动标题": event.title,
+            "状态": reg.status,
+            "报名时间": reg.signup_time.strftime("%Y-%m-%d %H:%M:%S") if reg.signup_time else ""
         })
 
-    df = pd.DataFrame(data)
+    df = pd.DataFrame(rows)
 
     output = io.BytesIO()
-    df.to_excel(output, index=False)
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="报名名单")
+
     output.seek(0)
 
+    filename = f"event_{event_id}_registrations.xlsx"
     return send_file(
         output,
         as_attachment=True,
-        download_name=f"event_{event_id}_registrations.xlsx",
+        download_name=filename,
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
