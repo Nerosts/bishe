@@ -42,7 +42,7 @@ const routes = [
     name: 'events',
     component: EventList,
     meta: {
-      roles: ['student']
+      roles: ['student', 'organizer', 'admin']
     }
   },
   {
