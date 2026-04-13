@@ -74,6 +74,22 @@ def check_role(required_role):
     return True, user, None
 
 
+def check_student():
+    user_id = get_request_user_id()
+
+    if not user_id:
+        return False, None, (jsonify({"message": "缺少 user_id"}), 403)
+
+    user = User.query.get(user_id)
+    if not user:
+        return False, None, (jsonify({"message": "用户不存在"}), 404)
+
+    if user.role != "student":
+        return False, None, (jsonify({"message": "只有 student 可以执行该操作"}), 403)
+
+    return True, user, None
+
+
 def check_organizer_access(route_organizer_id):
     user_id = get_request_user_id()
 
@@ -417,20 +433,19 @@ def get_event(event_id):
 
 @app.route("/registrations", methods=["POST"])
 def create_registration():
-    data = request.get_json()
+    ok, current_user, error_response = check_student()
+    if not ok:
+        return error_response
 
+    data = request.get_json()
     if not data:
         return jsonify({"message": "请求体不能为空"}), 400
 
-    user_id = data.get("user_id")
     event_id = data.get("event_id")
+    user_id = current_user.id
 
-    if not user_id or not event_id:
-        return jsonify({"message": "缺少用户ID或活动ID"}), 400
-
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({"message": "用户不存在"}), 404
+    if not event_id:
+        return jsonify({"message": "缺少活动ID"}), 400
 
     event = Event.query.get(event_id)
     if not event:
@@ -490,9 +505,12 @@ def get_registrations():
 
 @app.route("/users/<int:user_id>/registrations", methods=["GET"])
 def get_user_registrations(user_id):
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({"message": "用户不存在"}), 404
+    ok, current_user, error_response = check_student()
+    if not ok:
+        return error_response
+
+    if int(user_id) != int(current_user.id):
+        return jsonify({"message": "不能查看其他用户的报名"}), 403
 
     registrations = Registration.query.filter_by(user_id=user_id).all()
 
@@ -517,18 +535,16 @@ def get_user_registrations(user_id):
 
 @app.route("/registrations/<int:registration_id>", methods=["DELETE"])
 def cancel_registration(registration_id):
-    data = request.get_json(silent=True) or {}
-    user_id = data.get("user_id")
+    ok, current_user, error_response = check_student()
+    if not ok:
+        return error_response
 
     registration = Registration.query.get(registration_id)
     if not registration:
         return jsonify({"message": "报名记录不存在"}), 404
 
-    if not user_id:
-        return jsonify({"message": "缺少用户ID"}), 400
-
-    if int(registration.user_id) != int(user_id):
-        return jsonify({"message": "你无权取消这条报名记录"}), 403
+    if int(registration.user_id) != int(current_user.id):
+        return jsonify({"message": "你只能取消自己的报名"}), 403
 
     checkin = Checkin.query.filter_by(
         user_id=registration.user_id,
@@ -631,23 +647,20 @@ def checkin_page():
 
 @app.route("/checkin", methods=["POST"])
 def do_checkin():
+    ok, current_user, error_response = check_student()
+    if not ok:
+        return error_response
+
     data = request.get_json()
 
     if not data:
         return jsonify({"message": "请求体不能为空"}), 400
 
-    user_id = data.get("user_id")
     event_id = data.get("event_id")
+    user_id = current_user.id
 
-    if not user_id or not event_id:
-        return jsonify({"message": "缺少 user_id 或 event_id"}), 400
-
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({"message": "用户不存在"}), 404
-
-    if user.role != "student":
-        return jsonify({"message": "只有学生账号可以签到"}), 400
+    if not event_id:
+        return jsonify({"message": "缺少 event_id"}), 400
 
     event = Event.query.get(event_id)
     if not event:
