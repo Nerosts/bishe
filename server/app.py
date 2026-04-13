@@ -19,6 +19,9 @@ CORS(app)
 db.init_app(app)
 
 
+# =====================
+# 工具函数
+# =====================
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -109,6 +112,47 @@ def check_organizer_access(route_organizer_id):
     return True, current_user, None
 
 
+def approve_registration_logic(registration_id):
+    registration = Registration.query.get(registration_id)
+    if not registration:
+        return jsonify({"message": "报名记录不存在"}), 404
+
+    event = Event.query.get(registration.event_id)
+    if not event:
+        return jsonify({"message": "活动不存在"}), 404
+
+    real_status = calc_event_status(event)
+    if real_status == "已结束":
+        return jsonify({"message": "活动已结束，不能再审核通过"}), 400
+
+    approved_count = Registration.query.filter_by(
+        event_id=registration.event_id,
+        status="已通过"
+    ).count()
+
+    if registration.status != "已通过" and approved_count >= event.max_participants:
+        return jsonify({"message": "活动人数已满，无法审核通过"}), 400
+
+    registration.status = "已通过"
+    db.session.commit()
+
+    return jsonify({"message": "审核通过"})
+
+
+def reject_registration_logic(registration_id):
+    registration = Registration.query.get(registration_id)
+    if not registration:
+        return jsonify({"message": "报名记录不存在"}), 404
+
+    registration.status = "已拒绝"
+    db.session.commit()
+
+    return jsonify({"message": "审核拒绝"})
+
+
+# =====================
+# 基础接口
+# =====================
 @app.route("/")
 def hello():
     return "Flask + MySQL 已连接成功！"
@@ -123,6 +167,9 @@ def network_info():
     })
 
 
+# =====================
+# 用户模块
+# =====================
 @app.route("/register", methods=["POST"])
 def register():
     data = request.get_json()
@@ -374,6 +421,9 @@ def delete_admin_user(user_id):
     return jsonify({"message": "用户删除成功"})
 
 
+# =====================
+# 活动模块
+# =====================
 @app.route("/events", methods=["GET"])
 def get_events():
     events = Event.query.all()
@@ -431,6 +481,63 @@ def get_event(event_id):
     return jsonify(result)
 
 
+@app.route("/events", methods=["POST"])
+def create_event():
+    ok, current_user, error_response = check_role("organizer")
+    if not ok:
+        return error_response
+
+    data = request.get_json()
+
+    if not data:
+        return jsonify({"message": "请求体不能为空"}), 400
+
+    title = data.get("title")
+    category = data.get("category")
+    location = data.get("location")
+    start_time = data.get("start_time")
+    max_participants = data.get("max_participants")
+    description = data.get("description", "")
+    organizer_id = data.get("organizer_id")
+    status = data.get("status", "报名中")
+
+    if not title or not category or not location or not start_time or not max_participants:
+        return jsonify({"message": "缺少必要字段"}), 400
+
+    if not organizer_id:
+        return jsonify({"message": "缺少组织者ID"}), 400
+
+    if int(organizer_id) != int(current_user.id):
+        return jsonify({"message": "你不能冒用其他组织者身份发布活动"}), 403
+
+    try:
+        start_time_obj = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return jsonify({"message": "时间格式错误，应为 YYYY-MM-DD HH:MM:SS"}), 400
+
+    new_event = Event(
+        title=title,
+        category=category,
+        location=location,
+        start_time=start_time_obj,
+        max_participants=int(max_participants),
+        description=description,
+        status=status,
+        organizer_id=int(organizer_id)
+    )
+
+    db.session.add(new_event)
+    db.session.commit()
+
+    return jsonify({
+        "message": "活动发布成功",
+        "event_id": new_event.id
+    })
+
+
+# =====================
+# 报名模块
+# =====================
 @app.route("/registrations", methods=["POST"])
 def create_registration():
     ok, current_user, error_response = check_student()
@@ -560,48 +667,83 @@ def cancel_registration(registration_id):
     return jsonify({"message": "取消报名成功"})
 
 
+# =====================
+# 管理员审核模块（第56关优化）
+# =====================
+@app.route("/admin/review", methods=["GET"])
+def admin_review_list():
+    ok, user, error_response = check_role("admin")
+    if not ok:
+        return error_response
+
+    view_type = request.args.get("view", "pending").strip()
+    status_filter = request.args.get("status", "").strip()
+
+    query = Registration.query
+
+    if view_type == "pending":
+        query = query.filter_by(status="待审核")
+    elif view_type == "history":
+        query = query.filter(Registration.status.in_(["已通过", "已拒绝"]))
+        if status_filter in ["已通过", "已拒绝"]:
+            query = query.filter_by(status=status_filter)
+
+    registrations = query.order_by(Registration.id.desc()).all()
+
+    result = []
+    for item in registrations:
+        student = User.query.get(item.user_id)
+        event = Event.query.get(item.event_id)
+
+        result.append({
+            "registration_id": item.id,
+            "user_id": item.user_id,
+            "username": student.username if student else "未知用户",
+            "event_id": item.event_id,
+            "event_title": event.title if event else "未知活动",
+            "status": item.status,
+            "register_time": item.signup_time.strftime("%Y-%m-%d %H:%M:%S") if item.signup_time else ""
+        })
+
+    return jsonify(result)
+
+
+@app.route("/admin/review/<int:registration_id>/approve", methods=["POST"])
+def admin_review_approve(registration_id):
+    ok, user, error_response = check_role("admin")
+    if not ok:
+        return error_response
+    return approve_registration_logic(registration_id)
+
+
+@app.route("/admin/review/<int:registration_id>/reject", methods=["POST"])
+def admin_review_reject(registration_id):
+    ok, user, error_response = check_role("admin")
+    if not ok:
+        return error_response
+    return reject_registration_logic(registration_id)
+
+
+# 兼容旧接口，防止你前端还有旧调用
 @app.route("/registrations/<int:registration_id>/approve", methods=["PUT"])
 def approve_registration(registration_id):
-    registration = Registration.query.get(registration_id)
-
-    if not registration:
-        return jsonify({"message": "报名记录不存在"}), 404
-
-    event = Event.query.get(registration.event_id)
-    if not event:
-        return jsonify({"message": "活动不存在"}), 404
-
-    real_status = calc_event_status(event)
-    if real_status == "已结束":
-        return jsonify({"message": "活动已结束，不能再审核通过"}), 400
-
-    approved_count = Registration.query.filter_by(
-        event_id=registration.event_id,
-        status="已通过"
-    ).count()
-
-    if registration.status != "已通过" and approved_count >= event.max_participants:
-        return jsonify({"message": "活动人数已满，无法审核通过"}), 400
-
-    registration.status = "已通过"
-    db.session.commit()
-
-    return jsonify({"message": "审核通过"})
+    ok, user, error_response = check_role("admin")
+    if not ok:
+        return error_response
+    return approve_registration_logic(registration_id)
 
 
 @app.route("/registrations/<int:registration_id>/reject", methods=["PUT"])
 def reject_registration(registration_id):
-    registration = Registration.query.get(registration_id)
-
-    if not registration:
-        return jsonify({"message": "报名记录不存在"}), 404
-
-    registration.status = "已拒绝"
-    db.session.commit()
-
-    return jsonify({"message": "已拒绝"})
+    ok, user, error_response = check_role("admin")
+    if not ok:
+        return error_response
+    return reject_registration_logic(registration_id)
 
 
+# =====================
+# 二维码签到模块
+# =====================
 @app.route("/events/<int:event_id>/qrcode", methods=["GET"])
 def generate_event_qrcode(event_id):
     ok, current_user, error_response = check_role("organizer")
@@ -714,6 +856,9 @@ def get_checkins():
     return jsonify(result)
 
 
+# =====================
+# 管理员签到记录
+# =====================
 @app.route("/admin/checkins", methods=["GET"])
 def get_admin_checkins():
     ok, user, error_response = check_role("admin")
@@ -816,6 +961,9 @@ def export_admin_checkins():
     )
 
 
+# =====================
+# 热度分析与导出
+# =====================
 @app.route("/events/<int:event_id>/stats", methods=["GET"])
 def get_event_stats(event_id):
     event = Event.query.get(event_id)
@@ -999,60 +1147,9 @@ def chart_time_slots():
     })
 
 
-@app.route("/events", methods=["POST"])
-def create_event():
-    ok, current_user, error_response = check_role("organizer")
-    if not ok:
-        return error_response
-
-    data = request.get_json()
-
-    if not data:
-        return jsonify({"message": "请求体不能为空"}), 400
-
-    title = data.get("title")
-    category = data.get("category")
-    location = data.get("location")
-    start_time = data.get("start_time")
-    max_participants = data.get("max_participants")
-    description = data.get("description", "")
-    organizer_id = data.get("organizer_id")
-    status = data.get("status", "报名中")
-
-    if not title or not category or not location or not start_time or not max_participants:
-        return jsonify({"message": "缺少必要字段"}), 400
-
-    if not organizer_id:
-        return jsonify({"message": "缺少组织者ID"}), 400
-
-    if int(organizer_id) != int(current_user.id):
-        return jsonify({"message": "你不能冒用其他组织者身份发布活动"}), 403
-
-    try:
-        start_time_obj = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        return jsonify({"message": "时间格式错误，应为 YYYY-MM-DD HH:MM:SS"}), 400
-
-    new_event = Event(
-        title=title,
-        category=category,
-        location=location,
-        start_time=start_time_obj,
-        max_participants=int(max_participants),
-        description=description,
-        status=status,
-        organizer_id=int(organizer_id)
-    )
-
-    db.session.add(new_event)
-    db.session.commit()
-
-    return jsonify({
-        "message": "活动发布成功",
-        "event_id": new_event.id
-    })
-
-
+# =====================
+# 组织者模块
+# =====================
 @app.route("/organizer/<int:organizer_id>/events", methods=["GET"])
 def get_organizer_events(organizer_id):
     ok, current_user, error_response = check_organizer_access(organizer_id)
